@@ -1,6 +1,6 @@
 """
 Tool Xuất Dữ Liệu Chấm Công
-Xuất: Mã nhân viên, Họ và tên, Số ngày chấm công
+Xuất: Mã nhân viên, Họ và tên, Số ngày chấm công, Công chuẩn (mặc định 26)
 """
 
 import streamlit as st
@@ -116,11 +116,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">Tool Xuất Dữ Liệu Chấm Công</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Xuất ra 3 cột: Mã nhân viên | Họ và tên | Số ngày chấm công</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Xuất ra 4 cột: Mã nhân viên | Họ và tên | Số ngày chấm công | Công chuẩn</div>', unsafe_allow_html=True)
 
 
 # ====== THUẬT TOÁN ======
-def xu_ly_du_lieu_cham_cong(df, cot_ma_nv, cot_ten_nv, cot_ngay):
+def xu_ly_du_lieu_cham_cong(df, cot_ma_nv, cot_ten_nv, cot_ngay, cong_chuan=26):
     df_work = df[[cot_ma_nv, cot_ten_nv, cot_ngay]].copy()
     df_work = df_work.drop_duplicates(subset=[cot_ma_nv, cot_ngay])
     df_work[cot_ngay] = pd.to_datetime(df_work[cot_ngay], dayfirst=True, errors='coerce').dt.date
@@ -130,6 +130,7 @@ def xu_ly_du_lieu_cham_cong(df, cot_ma_nv, cot_ten_nv, cot_ngay):
     )
     
     df_ket_qua.columns = ['Mã nhân viên', 'Họ và tên', 'Số ngày chấm công']
+    df_ket_qua['Công chuẩn'] = cong_chuan
     
     df_ket_qua['_sort'] = pd.to_numeric(df_ket_qua['Mã nhân viên'], errors='coerce')
     df_ket_qua = df_ket_qua.sort_values('_sort', na_position='first').drop('_sort', axis=1).reset_index(drop=True)
@@ -154,7 +155,7 @@ def xuat_excel_dep(df):
     ws = wb.active
     ws.title = "Chấm Công"
     
-    ws.merge_cells('A1:C1')
+    ws.merge_cells('A1:D1')
     cell = ws['A1']
     cell.value = "BÁO CÁO CHẤM CÔNG"
     cell.font = Font(name='Arial', size=16, bold=True, color='FFFFFF')
@@ -162,7 +163,7 @@ def xuat_excel_dep(df):
     cell.fill = PatternFill(start_color='1E40AF', end_color='1E40AF', fill_type='solid')
     ws.row_dimensions[1].height = 30
     
-    headers = ['Mã nhân viên', 'Họ và tên', 'Số ngày chấm công']
+    headers = ['Mã nhân viên', 'Họ và tên', 'Số ngày chấm công', 'Công chuẩn']
     border = Border(
         left=Side(style='thin', color='D1D5DB'),
         right=Side(style='thin', color='D1D5DB'),
@@ -182,17 +183,18 @@ def xuat_excel_dep(df):
         ws.cell(row=row_idx, column=1, value=int(row[0]) if str(row[0]).isdigit() else row[0])
         ws.cell(row=row_idx, column=2, value=row[1])
         ws.cell(row=row_idx, column=3, value=int(row[2]))
+        ws.cell(row=row_idx, column=4, value=int(row[3]))
         
         if row_idx % 2 == 1:
             fill = PatternFill(start_color='F9FAFB', end_color='F9FAFB', fill_type='solid')
-            for col_idx in range(1, 4):
+            for col_idx in range(1, 5):
                 ws.cell(row=row_idx, column=col_idx).fill = fill
         
-        for col_idx in range(1, 4):
+        for col_idx in range(1, 5):
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.font = Font(name='Arial', size=11, color='111827')
             cell.border = border
-            if col_idx in [1, 3]:
+            if col_idx in [1, 3, 4]:
                 cell.alignment = Alignment(horizontal='center', vertical='center')
             else:
                 cell.alignment = Alignment(horizontal='left', vertical='center')
@@ -201,8 +203,9 @@ def xuat_excel_dep(df):
     ws.cell(row=last_row, column=1, value='TỔNG CỘNG')
     ws.cell(row=last_row, column=2, value=f"{len(df)} nhân viên")
     ws.cell(row=last_row, column=3, value=int(df['Số ngày chấm công'].sum()))
+    ws.cell(row=last_row, column=4, value=int(df['Công chuẩn'].sum()))
     
-    for col_idx in range(1, 4):
+    for col_idx in range(1, 5):
         c = ws.cell(row=last_row, column=col_idx)
         c.font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
         c.fill = PatternFill(start_color='1E40AF', end_color='1E40AF', fill_type='solid')
@@ -211,8 +214,9 @@ def xuat_excel_dep(df):
     ws.row_dimensions[last_row].height = 25
     
     ws.column_dimensions['A'].width = 18
-    ws.column_dimensions['B'].width = 40
+    ws.column_dimensions['B'].width = 35
     ws.column_dimensions['C'].width = 22
+    ws.column_dimensions['D'].width = 16
     
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -231,6 +235,7 @@ with st.sidebar:
     - Mã nhân viên
     - Họ và tên
     - Số ngày chấm công
+    - Công chuẩn
     """)
 
 
@@ -246,19 +251,21 @@ if uploaded_file is not None:
         ngay_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['ngày', 'ngay', 'date'])), all_cols[5])
         
         st.markdown("### Cấu hình")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             cot_ma_nv = st.selectbox("Cột Mã NV:", all_cols, index=all_cols.index(ma_nv_def))
         with col2:
             cot_ten_nv = st.selectbox("Cột Họ tên:", all_cols, index=all_cols.index(ten_nv_def))
         with col3:
             cot_ngay = st.selectbox("Cột Ngày:", all_cols, index=all_cols.index(ngay_def))
+        with col4:
+            cong_chuan = st.number_input("Công chuẩn:", min_value=1, max_value=31, value=26)
         
         st.markdown("---")
         
         if st.button("Xử lý dữ liệu", use_container_width=True):
             with st.spinner("Đang xử lý..."):
-                df_kq = xu_ly_du_lieu_cham_cong(df_raw, cot_ma_nv, cot_ten_nv, cot_ngay)
+                df_kq = xu_ly_du_lieu_cham_cong(df_raw, cot_ma_nv, cot_ten_nv, cot_ngay, cong_chuan)
                 st.session_state['df_kq'] = df_kq
         
         if 'df_kq' in st.session_state:
