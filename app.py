@@ -1,18 +1,18 @@
 """
-Tool Xuất Dữ Liệu Chấm Công
-Xuất: Mã nhân viên, Họ và tên, Số ngày chấm công, Số ngày nghỉ, Công chuẩn
+Tool Xuất Dữ Liệu Chấm Công - Phiên bản BCC
+Xuất file BCC (Bảng Chấm Công) theo template Trần Phú
 """
 
 import streamlit as st
 import pandas as pd
 import io
-from datetime import datetime
+from datetime import datetime, date
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from leave_processor import doc_file_dang_ky_nghi, xu_ly_dang_ky_nghi, get_cot_names, tinh_ngay_cong_chuan
+from leave_processor import doc_file_dang_ky_nghi, xu_ly_dang_ky_nghi, get_cot_names
+from template_processor import xuat_bcc_theo_template, doc_bcc_template
 
 st.set_page_config(
-    page_title="Tool Xuất Chấm Công",
+    page_title="Tool Xuất BCC - Trần Phú",
     layout="wide"
 )
 
@@ -128,29 +128,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-title">Tool Xuất Dữ Liệu Chấm Công</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Xuất ra 5 cột: Mã nhân viên | Họ và tên | Số ngày chấm công | Số ngày nghỉ | Công chuẩn</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">Tool Xuất BCC - Trần Phú</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Xuất bảng chấm công theo định dạng mẫu Trần Phú 2026</div>', unsafe_allow_html=True)
 
 
-# ====== THUẬT TOÁN ======
-def xu_ly_du_lieu_cham_cong(df, cot_ma_nv, cot_ten_nv, cot_ngay):
-    df_work = df[[cot_ma_nv, cot_ten_nv, cot_ngay]].copy()
-    df_work = df_work.drop_duplicates(subset=[cot_ma_nv, cot_ngay])
-    df_work[cot_ngay] = pd.to_datetime(df_work[cot_ngay], dayfirst=True, errors='coerce').dt.date
-    
-    df_ket_qua = df_work.groupby([cot_ma_nv, cot_ten_nv], as_index=False).agg(
-        so_ngay_cham_cong=(cot_ngay, 'nunique')
-    )
-    
-    df_ket_qua.columns = ['Ma_nv', 'Ho_ten', 'So_ngay_cham_cong']
-    
-    df_ket_qua['_sort'] = pd.to_numeric(df_ket_qua['Ma_nv'], errors='coerce')
-    df_ket_qua = df_ket_qua.sort_values('_sort', na_position='first').drop('_sort', axis=1).reset_index(drop=True)
-    
-    return df_ket_qua
-
-
-def doc_file_excel(file_bytes):
+# ====== HÀM XỬ LÝ ======
+def doc_file_excel_cham_cong(file_bytes):
+    """Đọc file chấm công với header=2 (như cũ)"""
     engines = ['calamine', 'openpyxl', 'xlrd']
     for engine in engines:
         try:
@@ -159,84 +143,76 @@ def doc_file_excel(file_bytes):
             return df
         except:
             continue
-    raise Exception("Không thể đọc file Excel")
+    raise Exception("Không thể đọc file Excel chấm công")
 
 
-def xuat_excel_dep(df):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Chấm Công"
+def build_cham_cong_dict(df_cham_cong, cot_ma_nv, cot_ngay):
+    """
+    Tạo dict {(ma_nv, date): True} từ file chấm công
+    """
+    result = {}
+    df_work = df_cham_cong[[cot_ma_nv, cot_ngay]].copy()
+    df_work = df_work.dropna(subset=[cot_ngay])
+    df_work[cot_ngay] = pd.to_datetime(df_work[cot_ngay], dayfirst=True, errors='coerce')
+    df_work = df_work.dropna(subset=[cot_ngay])
+    df_work = df_work.drop_duplicates(subset=[cot_ma_nv, cot_ngay])
     
-    ws.merge_cells('A1:E1')
-    cell = ws['A1']
-    cell.value = "BÁO CÁO CHẤM CÔNG"
-    cell.font = Font(name='Arial', size=16, bold=True, color='FFFFFF')
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    cell.fill = PatternFill(start_color='1E40AF', end_color='1E40AF', fill_type='solid')
-    ws.row_dimensions[1].height = 30
+    for _, row in df_work.iterrows():
+        ma_nv = str(row[cot_ma_nv]).strip()
+        ngay = row[cot_ngay].date()
+        result[(ma_nv, ngay)] = True
     
-    headers = ['Mã nhân viên', 'Họ và tên', 'Số ngày chấm công', 'Số ngày nghỉ', 'Công chuẩn']
-    border = Border(
-        left=Side(style='thin', color='D1D5DB'),
-        right=Side(style='thin', color='D1D5DB'),
-        top=Side(style='thin', color='D1D5DB'),
-        bottom=Side(style='thin', color='D1D5DB')
-    )
+    return result
+
+
+def build_nghi_dict(df_nghi):
+    """
+    Tạo dict {(ma_nv, date): 'P'} từ file đăng ký nghỉ
+    """
+    result = {}
+    nghi_dict, cot_ma, cot_ngay = xu_ly_dang_ky_nghi(df_nghi)
     
-    for col_idx, header in enumerate(headers, start=1):
-        c = ws.cell(row=2, column=col_idx, value=header)
-        c.font = Font(name='Arial', size=11, bold=True, color='FFFFFF')
-        c.fill = PatternFill(start_color='1E40AF', end_color='1E40AF', fill_type='solid')
-        c.alignment = Alignment(horizontal='center', vertical='center')
-        c.border = border
-    ws.row_dimensions[2].height = 25
+    for _, row in df_nghi.iterrows():
+        ma_nv = str(row[cot_ma]).strip()
+        ngay_val = row[cot_ngay]
+        if pd.isna(ngay_val):
+            continue
+        ngay = pd.to_datetime(ngay_val, dayfirst=True, errors='coerce')
+        if pd.isna(ngay):
+            continue
+        result[(ma_nv, ngay.date())] = 'P'
     
-    for row_idx, row in enumerate(df.itertuples(index=False), start=3):
-        ws.cell(row=row_idx, column=1, value=int(row[0]) if str(row[0]).isdigit() else row[0])
-        ws.cell(row=row_idx, column=2, value=row[1])
-        ws.cell(row=row_idx, column=3, value=int(row[2]))
-        ws.cell(row=row_idx, column=4, value=int(row[3]) if pd.notna(row[3]) else 0)
-        ws.cell(row=row_idx, column=5, value=int(row[4]))
-        
-        if row_idx % 2 == 1:
-            fill = PatternFill(start_color='F9FAFB', end_color='F9FAFB', fill_type='solid')
-            for col_idx in range(1, 6):
-                ws.cell(row=row_idx, column=col_idx).fill = fill
-        
-        for col_idx in range(1, 6):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            cell.font = Font(name='Arial', size=11, color='111827')
-            cell.border = border
-            if col_idx in [1, 3, 4, 5]:
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-            else:
-                cell.alignment = Alignment(horizontal='left', vertical='center')
+    return result
+
+
+def build_ds_nhan_vien(df_cham_cong, cot_ma_nv, cot_ten_nv, cot_chuc_vu=None, cot_ngay_nv=None):
+    """
+    Tạo danh sách nhân viên từ file chấm công
+    """
+    df_work = df_cham_cong[[cot_ma_nv, cot_ten_nv]].copy()
+    if cot_chuc_vu and cot_chuc_vu in df_cham_cong.columns:
+        df_work[cot_chuc_vu] = df_cham_cong[cot_chuc_vu]
+    if cot_ngay_nv and cot_ngay_nv in df_cham_cong.columns:
+        df_work[cot_ngay_nv] = df_cham_cong[cot_ngay_nv]
     
-    last_row = len(df) + 3
-    ws.cell(row=last_row, column=1, value='TỔNG CỘNG')
-    ws.cell(row=last_row, column=2, value=f"{len(df)} nhân viên")
-    ws.cell(row=last_row, column=3, value=int(df['So_ngay_cham_cong'].sum()))
-    ws.cell(row=last_row, column=4, value=int(df['So_ngay_nghi'].sum()))
-    ws.cell(row=last_row, column=5, value=int(df['Cong_chuan'].sum()))
+    df_work = df_work.drop_duplicates(subset=[cot_ma_nv]).reset_index(drop=True)
     
-    for col_idx in range(1, 6):
-        c = ws.cell(row=last_row, column=col_idx)
-        c.font = Font(name='Arial', size=12, bold=True, color='FFFFFF')
-        c.fill = PatternFill(start_color='1E40AF', end_color='1E40AF', fill_type='solid')
-        c.border = border
-        c.alignment = Alignment(horizontal='center', vertical='center')
-    ws.row_dimensions[last_row].height = 25
+    ds_nv = []
+    for _, row in df_work.iterrows():
+        nv = {
+            'ma_nv': str(row[cot_ma_nv]).strip(),
+            'ho_ten': str(row[cot_ten_nv]).strip() if pd.notna(row[cot_ten_nv]) else '',
+            'chuc_vu': str(row[cot_chuc_vu]).strip() if cot_chuc_vu and cot_chuc_vu in df_work.columns and pd.notna(row.get(cot_chuc_vu)) else '',
+        }
+        if cot_ngay_nv and cot_ngay_nv in df_work.columns and pd.notna(row.get(cot_ngay_nv)):
+            ngay_nv_val = row[cot_ngay_nv]
+            try:
+                nv['ngay_nhan_viec'] = pd.to_datetime(ngay_nv_val, dayfirst=True, errors='coerce').date()
+            except:
+                pass
+        ds_nv.append(nv)
     
-    ws.column_dimensions['A'].width = 18
-    ws.column_dimensions['B'].width = 35
-    ws.column_dimensions['C'].width = 22
-    ws.column_dimensions['D'].width = 18
-    ws.column_dimensions['E'].width = 16
-    
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer
+    return ds_nv
 
 
 # ====== GIAO DIỆN ======
@@ -244,128 +220,140 @@ with st.sidebar:
     st.markdown("### Upload Files")
     
     st.markdown("---")
-    st.markdown("#### 1. File Chấm Công")
-    uploaded_file_cham_cong = st.file_uploader("Chọn file chấm công", type=['xlsx', 'xls'], key="cham_cong")
+    st.markdown("#### 1. File Template BCC")
+    uploaded_template = st.file_uploader("Template BCC Trần Phú (bắt buộc)", type=['xlsx'], key="template")
     
     st.markdown("---")
-    st.markdown("#### 2. File Đăng Ký Nghỉ")
-    uploaded_file_nghi = st.file_uploader("Chọn file đăng ký nghỉ (tùy chọn)", type=['xlsx', 'xls'], key="nghi")
+    st.markdown("#### 2. File Chấm Công")
+    uploaded_cham_cong = st.file_uploader("File chấm công (bắt buộc)", type=['xlsx', 'xls'], key="cham_cong")
     
     st.markdown("---")
-    st.markdown("### Kết quả xuất")
-    st.markdown("""
-    - Mã nhân viên
-    - Họ và tên
-    - Số ngày chấm công
-    - Số ngày nghỉ
-    - Công chuẩn
-    """)
+    st.markdown("#### 3. File Đăng Ký Nghỉ")
+    uploaded_nghi = st.file_uploader("File đăng ký nghỉ (tùy chọn)", type=['xlsx', 'xls'], key="nghi")
 
 
-# Kiểm tra đã upload đủ file chưa
-if uploaded_file_cham_cong is None:
+if uploaded_template is None or uploaded_cham_cong is None:
     st.markdown("""
     <div class="info-box">
-        <h4>Vui lòng upload file để bắt đầu</h4>
+        <h4>Vui lòng upload đầy đủ file để bắt đầu</h4>
         <p>Cần upload:</p>
+        <p>- File template BCC Trần Phú (bắt buộc)</p>
         <p>- File chấm công (bắt buộc)</p>
         <p>- File đăng ký nghỉ (tùy chọn)</p>
     </div>
     """, unsafe_allow_html=True)
-else:
-    try:
-        df_raw = doc_file_excel(uploaded_file_cham_cong)
-        st.markdown('<div class="info-box"><h4>Đã đọc file chấm công thành công</h4></div>', unsafe_allow_html=True)
-        
-        all_cols = df_raw.columns.tolist()
+    st.stop()
+
+try:
+    # Đọc template
+    template_info = doc_bcc_template(uploaded_template)
+    st.markdown(f'<div class="info-box"><h4>Đã đọc template: {template_info["sheet_name"]} - Tháng {template_info["thang"]}/{template_info["nam"]}</h4><p>Template có sẵn {template_info["last_row"] - 6} dòng nhân viên</p></div>', unsafe_allow_html=True)
+    
+    # Đọc file chấm công
+    df_raw = doc_file_excel_cham_cong(uploaded_cham_cong)
+    st.markdown(f'<div class="info-box"><h4>Đã đọc file chấm công: {len(df_raw)} dòng</h4></div>', unsafe_allow_html=True)
+    
+    # Đọc file đăng ký nghỉ
+    nghi_data = {}
+    if uploaded_nghi is not None:
+        try:
+            df_nghi = doc_file_dang_ky_nghi(uploaded_nghi)
+            nghi_data = build_nghi_dict(df_nghi)
+            st.markdown(f'<div class="info-box"><h4>Đã đọc file đăng ký nghỉ: {len(nghi_data)} ngày nghỉ</h4></div>', unsafe_allow_html=True)
+        except Exception as e:
+            st.warning(f"Không thể đọc file đăng ký nghỉ: {str(e)}")
+    
+    # Cấu hình cột
+    st.markdown("### Cấu hình cột dữ liệu")
+    all_cols = df_raw.columns.tolist()
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
         ma_nv_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['mã', 'ma', 'staff'])), all_cols[1])
+        cot_ma_nv = st.selectbox("Cột Mã NV:", all_cols, index=all_cols.index(ma_nv_def))
+    with col2:
         ten_nv_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['tên', 'ten', 'name'])), all_cols[2])
+        cot_ten_nv = st.selectbox("Cột Họ tên:", all_cols, index=all_cols.index(ten_nv_def))
+    with col3:
         ngay_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['ngày', 'ngay', 'date'])), all_cols[5])
+        cot_ngay = st.selectbox("Cột Ngày chấm công:", all_cols, index=all_cols.index(ngay_def))
+    with col4:
+        chuc_vu_options = ['(Không có)'] + all_cols
+        chuc_vu_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['chức', 'chuc', 'vị trí', 'position'])), '(Không có)')
+        chuc_vu_idx = chuc_vu_options.index(chuc_vu_def) if chuc_vu_def in chuc_vu_options else 0
+        cot_chuc_vu = st.selectbox("Cột Chức vụ:", chuc_vu_options, index=chuc_vu_idx)
+        cot_chuc_vu = None if cot_chuc_vu == '(Không có)' else cot_chuc_vu
+    with col5:
+        ngay_nv_options = ['(Không có)'] + all_cols
+        ngay_nv_def = next((c for c in all_cols if any(k in str(c).lower() for k in ['nhận việc', 'nhận', 'start', 'vào làm'])), '(Không có)')
+        ngay_nv_idx = ngay_nv_options.index(ngay_nv_def) if ngay_nv_def in ngay_nv_options else 0
+        cot_ngay_nv = st.selectbox("Cột Ngày nhận việc:", ngay_nv_options, index=ngay_nv_idx)
+        cot_ngay_nv = None if cot_ngay_nv == '(Không có)' else cot_ngay_nv
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        thang = st.number_input("Tháng:", min_value=1, max_value=12, value=template_info['thang'])
+    with col2:
+        nam = st.number_input("Năm:", min_value=2020, max_value=2099, value=template_info['nam'])
+    
+    st.markdown("---")
+    
+    if st.button("Xử lý và xuất BCC", use_container_width=True):
+        with st.spinner("Đang xử lý..."):
+            # Build dữ liệu
+            cham_cong_data = build_cham_cong_dict(df_raw, cot_ma_nv, cot_ngay)
+            ds_nv = build_ds_nhan_vien(df_raw, cot_ma_nv, cot_ten_nv, cot_chuc_vu, cot_ngay_nv)
+            
+            st.session_state['cham_cong_data'] = cham_cong_data
+            st.session_state['nghi_data'] = nghi_data
+            st.session_state['ds_nv'] = ds_nv
+    
+    if 'ds_nv' in st.session_state:
+        ds_nv = st.session_state['ds_nv']
+        cham_cong_data = st.session_state['cham_cong_data']
+        nghi_data = st.session_state['nghi_data']
         
-        # Xử lý file đăng ký nghỉ
-        nghi_dict = {}
-        cot_ma_nghi = None
-        cot_ngay_nghi = None
-        
-        if uploaded_file_nghi is not None:
-            try:
-                df_nghi = doc_file_dang_ky_nghi(uploaded_file_nghi)
-                cols_nghi = get_cot_names(df_nghi)
-                nghi_dict, cot_ma_nghi, cot_ngay_nghi = xu_ly_dang_ky_nghi(df_nghi)
-                st.markdown(f'<div class="info-box"><h4>Đã đọc file đăng ký nghỉ thành công</h4><p>Tìm thấy {len(nghi_dict)} nhân viên có đăng ký nghỉ</p></div>', unsafe_allow_html=True)
-            except Exception as e:
-                st.warning(f"Không thể đọc file đăng ký nghỉ: {str(e)}")
-        
-        st.markdown("### Cấu hình")
+        st.markdown("### Thống kê")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            cot_ma_nv = st.selectbox("Cột Mã NV:", all_cols, index=all_cols.index(ma_nv_def))
+            st.markdown(f'<div class="metric-box"><p class="label">Tổng nhân viên</p><p class="value">{len(ds_nv)}</p></div>', unsafe_allow_html=True)
         with col2:
-            cot_ten_nv = st.selectbox("Cột Họ tên:", all_cols, index=all_cols.index(ten_nv_def))
+            st.markdown(f'<div class="metric-box"><p class="label">Tổng ngày công</p><p class="value">{len(cham_cong_data):,}</p></div>', unsafe_allow_html=True)
         with col3:
-            cot_ngay = st.selectbox("Cột Ngày:", all_cols, index=all_cols.index(ngay_def))
+            st.markdown(f'<div class="metric-box"><p class="label">Tổng ngày nghỉ</p><p class="value">{len(nghi_data):,}</p></div>', unsafe_allow_html=True)
         with col4:
-            cong_chuan = st.number_input("Công chuẩn:", min_value=1, max_value=31, value=26)
+            st.markdown(f'<div class="metric-box"><p class="label">Tháng/Năm</p><p class="value">{thang}/{nam}</p></div>', unsafe_allow_html=True)
         
-        st.markdown("---")
+        st.markdown("### Danh sách nhân viên")
+        df_preview = pd.DataFrame(ds_nv)
+        st.dataframe(df_preview, use_container_width=True, hide_index=True, height=300)
         
-        if st.button("Xử lý dữ liệu", use_container_width=True):
-            with st.spinner("Đang xử lý..."):
-                df_kq = xu_ly_du_lieu_cham_cong(df_raw, cot_ma_nv, cot_ten_nv, cot_ngay)
-                
-                # Thêm cột số ngày nghỉ
-                df_kq['Ma_nv_str'] = df_kq['Ma_nv'].astype(str).str.strip()
-                df_kq['So_ngay_nghi'] = df_kq['Ma_nv_str'].map(nghi_dict).fillna(0).astype(int)
-                
-                # Tính công chuẩn = công chuẩn - số ngày nghỉ
-                df_kq['Cong_chuan'] = df_kq['So_ngay_nghi'].apply(lambda x: max(0, cong_chuan - x))
-                
-                # Đổi tên cột cuối
-                df_kq = df_kq.rename(columns={'Cong_chuan': 'Công chuẩn', 'So_ngay_nghi': 'Số ngày nghỉ'})
-                
-                st.session_state['df_kq'] = df_kq
+        st.markdown("### Tải xuống")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Tạo file BCC", use_container_width=True):
+                with st.spinner("Đang tạo file BCC..."):
+                    excel_buf = xuat_bcc_theo_template(
+                        template_path=uploaded_template,
+                        ds_nhan_vien=ds_nv,
+                        cham_cong_data=cham_cong_data,
+                        nghi_data=nghi_data,
+                        thang=int(thang),
+                        nam=int(nam),
+                        cong_chuan=26
+                    )
+                    st.session_state['excel_buf'] = excel_buf
         
-        if 'df_kq' in st.session_state:
-            df_kq = st.session_state['df_kq']
-            
-            st.markdown("### Thống kê")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.markdown(f'<div class="metric-box"><p class="label">Tổng nhân viên</p><p class="value">{len(df_kq)}</p></div>', unsafe_allow_html=True)
-            with col2:
-                st.markdown(f'<div class="metric-box"><p class="label">Tổng ngày công</p><p class="value">{int(df_kq["So_ngay_cham_cong"].sum()):,}</p></div>', unsafe_allow_html=True)
-            with col3:
-                st.markdown(f'<div class="metric-box"><p class="label">Tổng ngày nghỉ</p><p class="value">{int(df_kq["Số ngày nghỉ"].sum()):,}</p></div>', unsafe_allow_html=True)
-            with col4:
-                st.markdown(f'<div class="metric-box"><p class="label">Trung bình / NV</p><p class="value">{df_kq["So_ngay_cham_cong"].mean():.1f}</p></div>', unsafe_allow_html=True)
-            
-            # Hiển thị dataframe với tên cột đẹp
-            df_hien_thi = df_kq[['Ma_nv', 'Ho_ten', 'So_ngay_cham_cong', 'Số ngày nghỉ', 'Công chuẩn']].copy()
-            df_hien_thi.columns = ['Mã nhân viên', 'Họ và tên', 'Số ngày chấm công', 'Số ngày nghỉ', 'Công chuẩn']
-            
-            st.markdown("### Kết quả")
-            st.dataframe(df_hien_thi, use_container_width=True, hide_index=True, height=450)
-            
-            st.markdown("### Tải xuống")
-            col1, col2 = st.columns(2)
-            with col1:
-                excel_buf = xuat_excel_dep(df_kq)
-                st.download_button(
-                    "Tải Excel (.xlsx)",
-                    data=excel_buf,
-                    file_name=f"cham_cong_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            with col2:
-                csv_buf = df_hien_thi.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button(
-                    "Tải CSV (.csv)",
-                    data=csv_buf,
-                    file_name=f"cham_cong_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-    
-    except Exception as e:
-        st.error(f"Lỗi: {str(e)}")
+        if 'excel_buf' in st.session_state:
+            st.download_button(
+                "Tải xuống BCC (.xlsx)",
+                data=st.session_state['excel_buf'],
+                file_name=f"BCC_Thang_{int(thang):02d}_{int(nam)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+except Exception as e:
+    st.error(f"Lỗi: {str(e)}")
+    import traceback
+    st.code(traceback.format_exc())
